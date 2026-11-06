@@ -1,11 +1,29 @@
-# 密钥（放在项目根目录，文件名随意，形如 sk-xxxx 会被自动识别）
+# ===== 密钥（绝不进版本库）=====
+# 项目约定：密钥放在根目录，文件名任意但内容形如 sk-xxxx
+apikey.txt
 *.text
 *.key
-.text
+.env
+.env.*
 
-# 生成产物
+# ===== 依赖 =====
+node_modules/
+package-lock.json
+
+# ===== 生成产物（体积大、可重跑）=====
 out/
 
-# Python
+# 每镜首帧、视频片段、成片都是可重跑的产物，不进版本库
+projects/*/20-frames/
+projects/*/30-video/
+projects/*/40-out/
+projects/*/h3_prompts.md
+projects/*/manifest.json
+projects/*/state.json
+
+# ===== 临时与调试 =====
 __pycache__/
 *.pyc
+*.log
+*.tmp
+.cache/

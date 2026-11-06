@@ -1,0 +1,16 @@
+{
+  "name": "ai-video-pipeline",
+  "private": true,
+  "type": "commonjs",
+  "description": "AI 视频生产流水线：角色定妆照、逐镜首帧生成与审片、时长审计、视频抽帧",
+  "dependencies": {
+    "ffmpeg-static": "^5.3.0",
+    "sharp": "^0.35.5"
+  },
+  "scripts": {
+    "frames": "node generate.js --project projects/song --concurrency 4",
+    "chars": "node character_sheet.js --project projects/song",
+    "audit": "node timing_audit.js projects/song/00-spec/shots.json",
+    "sheet": "node sheet.js projects/song/20-frames"
+  }
+}
