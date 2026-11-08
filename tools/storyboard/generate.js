@@ -269,6 +269,14 @@ function composePrompt(shot, feedback, styleLock, hasRef) {
   const lock = shot.style_lock || styleLock;
   if (lock) prompt += "\n" + lock;
   if (hasRef) prompt += "\n" + (shot.ref_instruction || buildRefInstruction(shot));
+  // 尾帧镜头：说明这一镜是「改出来的尾帧」还是「独立生成的首帧」
+  if (shot.last_frame) {
+    prompt += "\n" + buildFrameTransitionRule(shot);
+  }
+  // 多分镜帧镜头：把每段之间怎么接写清楚
+  if ((shot.beats || []).length > 1) {
+    prompt += "\n" + buildBeatsNarrative(shot);
+  }
   for (const item of feedback) prompt += "\n修正要求（必须满足）：" + item;
   return prompt;
 }
@@ -284,6 +292,82 @@ function buildRefInstruction(shot) {
     return "参考图分工（必须严格按用途使用，不要混用）：" + parts.join("；") + "。";
   }
   return REF_INSTRUCTION;
+}
+
+/**
+ * 首尾帧对齐句（H3 官方句式）。
+ * shot.last_frame 存在时，第 1 张是首帧，最后 1 张是尾帧，中间的是人物/场景参考。
+ */
+/**
+ * 多分镜帧对齐句：把每张帧绑到具体秒数，并说明段与段之间怎么接。
+ * 这是「只有一张首帧 → H3 不知道接下来怎么演」的解法。
+ */
+function buildBeatsAlign(shot) {
+  const n = (shot.beats || []).length;
+  if (!n) return "";
+  const refCount = (Array.isArray(shot.ref) ? shot.ref : shot.ref ? [shot.ref] : []).length;
+  const firstBeatIdx = refCount - n + 1; // beats 帧在 ref 列表末尾
+  const dur = shot.duration || 5;
+
+  const parts = shot.beats.map((b, i) => {
+    const pic = `<Picture ${firstBeatIdx + i}>`;
+    const t = (Number(b.t) || 0).toFixed(2);
+    return `${pic} is the exact frame at the ${t}-second mark (${b.name || ""})`;
+  });
+
+  return (
+    "How the reference pictures align with the target video — " +
+    parts.join("; ") +
+    `. The last frame aligns with the ${dur.toFixed(2)}-second mark. ` +
+    "All frames share the same camera position, framing, background and lighting; only the pose and the progress of the action differ between them. " +
+    "The motion must flow continuously from one frame to the next, with no cut, no dissolve and no jump."
+  );
+}
+
+/** 段间衔接说明（中文补充，让模型理解每一段在演什么） */
+function buildBeatsNarrative(shot) {
+  const bs = shot.beats || [];
+  if (bs.length < 2) return "";
+  const segs = [];
+  for (let i = 0; i < bs.length - 1; i++) {
+    const a = bs[i];
+    const b = bs[i + 1];
+    const t0 = (Number(a.t) || 0).toFixed(1);
+    const t1 = (Number(b.t) || 0).toFixed(1);
+    segs.push(`${t0}–${t1} 秒：从「${a.name || ""}」过渡到「${b.name || ""}」，这一段必须是连续的身体运动`);
+  }
+  return `分段衔接：${segs.join("；")}。段与段之间不许跳、不许叠化、不许淡入淡出。`;
+}
+
+function buildFrameAlign(shot) {
+  const wants = Array.isArray(shot.ref) ? shot.ref : shot.ref ? [shot.ref] : [];
+  if ((shot.beats || []).length) return buildBeatsAlign(shot);
+  if (!shot.last_frame) {
+    if (!wants.length) return "";
+    return "For the target video, at 0.00 seconds into the target video, <Picture 1> is fully referenced as the opening frame.";
+  }
+  const lastIdx = wants.length; // 尾帧固定是最后上传的那张
+  const dur = shot.duration || 5;
+  return (
+    "How the reference pictures align with the target video — " +
+    `<Picture 1> aligns with the 0.00-second mark of the target video as the exact opening frame; ` +
+    `<Picture ${lastIdx}> aligns with the ${dur.toFixed(2)}-second mark of the target video as the exact final frame. ` +
+    "The motion must travel continuously from the first frame to the last frame, with no cut in between."
+  );
+}
+
+/**
+ * 首尾帧镜头的补充指令：告诉模型什么变、什么不变。
+ * 这是首尾帧能否衔接的关键——只描述动作、不锁定环境，模型会把背景一起形变。
+ */
+function buildFrameTransitionRule(shot) {
+  if (!shot.last_frame) return "";
+  const keep = shot.keep_static || "机位、背景、光位、服装、人物比例";
+  const move = shot.what_moves || "只有身体姿态与肢体位置发生变化";
+  return (
+    `首尾帧衔接要求：全片保持同一机位、同一构图、同一背景、同一光位，画面边缘不得有任何位移或缩放；` +
+    `${keep}全程不变。${move}。中间过程必须是连续的身体运动，不允许淡入淡出、不允许叠化、不允许直接跳到尾帧。`
+  );
 }
 
 let sharp = null;
@@ -409,6 +493,31 @@ async function run(args) {
   log("分镜定义：" + path.relative(PROJECT_ROOT, shotsPath));
   log("首帧输出：" + path.relative(PROJECT_ROOT, outDir));
 
+  // 生成前的分镜自检：把「描述本身就写错了」的问题拦在花钱之前。
+  // 审片只判画面，判不了描述有没有自相矛盾（例如要求露左脸又要鼻尖朝右）。
+  try {
+    const { lint } = require("./lint_shots.js");
+    const lr = lint(projDir);
+    const errs = (lr.results || []).flatMap((it) =>
+      it.findings.filter(([lv]) => lv === "ERROR").map(([, msg]) => `${it.id}: ${msg}`)
+    );
+    if (errs.length) {
+      log("");
+      log("分镜自检发现 " + errs.length + " 处 ERROR：");
+      for (const e of errs) log("  · " + e);
+      if (!args.force) {
+        throw new Error(
+          "分镜自检未通过，已中止生成。改好 shots.json 后重试，或加 --force 跳过。"
+        );
+      }
+      log("  （--force 已指定，继续生成）");
+      log("");
+    }
+  } catch (e) {
+    if (/分镜自检未通过/.test(e.message)) throw e;
+    log("分镜自检跳过：" + e.message);
+  }
+
   if (args.dryRun) {
     for (const s of shots) {
       const ref = Array.isArray(s.ref) ? s.ref.join(", ") : s.ref || "-";
@@ -502,6 +611,7 @@ async function run(args) {
     const finalPath = path.join(outDir, sid + ".png");
 
     // 参考图：支持 "prev"、其他镜头 id、项目内本地素材路径
+    // 首尾帧镜头：ref 里放参考图，last_frame 放尾帧；尾帧会被追加到上传列表最后
     const refFiles = [];
     const wants = Array.isArray(s.ref) ? s.ref : s.ref ? [s.ref] : [];
     for (const w of wants) {
@@ -519,6 +629,8 @@ async function run(args) {
         const candidates = [
           approvedPaths[w],
           path.join(projDir, "10-refs", bare),
+          // 分镜帧放在 20-frames/beats/ 下
+          path.isAbsolute(w) ? null : path.join(outDir, w),
           path.join(outDir, bare + ".png"),
           path.join(outDir, bare),
           path.isAbsolute(w) ? w : path.join(projDir, w),
@@ -538,6 +650,30 @@ async function run(args) {
         }
       }
     }
+
+    // 首尾帧：尾帧必须在最后一位
+    if (s.last_frame) {
+      const lf = s.last_frame;
+      const bareLf = path.isAbsolute(lf) ? lf : path.basename(lf);
+      const lfCandidates = [
+        path.join(projDir, "10-refs", bareLf),
+        path.join(outDir, bareLf.endsWith(".png") ? bareLf : bareLf + ".png"),
+        path.join(outDir, bareLf),
+        path.isAbsolute(lf) ? lf : path.join(projDir, lf),
+        path.isAbsolute(lf) ? lf : path.join(PROJECT_ROOT, lf),
+      ].filter(Boolean);
+      const lfHit = lfCandidates.find((p) => {
+        try {
+          return fs.existsSync(p);
+        } catch {
+          return false;
+        }
+      });
+      if (!lfHit) throw new Error(`[${sid}] 尾帧找不到：${lf}`);
+      refFiles.push(lfHit);
+      log(`[${sid}] 首尾帧模式：首帧 + ${refFiles.length - 2} 张参考 + 尾帧（${path.basename(lfHit)}）`);
+    }
+
     const refs = [];
     for (const p of refFiles) {
       const d = await loadRef(p);
@@ -556,6 +692,28 @@ async function run(args) {
       );
     }
     if (refFiles.length) log(`[${sid}] 参考图：${refFiles.map((p) => path.basename(p)).join(", ")}`);
+
+    // 首尾帧配对自检：差异过大模型只会形变，提前拦下
+    if (s.last_frame && refFiles.length >= 2) {
+      try {
+        const { checkPair } = require("./pair_check.js");
+        const pc = await checkPair(refFiles[0], refFiles[refFiles.length - 1]);
+        log(
+          `[${sid}] 首尾帧配对：${pc.score}/100 ${pc.verdict}` +
+            `（边框变化 ${pc.metrics.borderChange}%，全画面变化 ${pc.metrics.totalChange}%）`
+        );
+        if (pc.issues.length) for (const it of pc.issues) log("        · " + it);
+        if (pc.score < 55) {
+          throw new Error(
+            `[${sid}] 首尾帧差异过大（${pc.score}/100），模型会形变。请用首帧为底图改出尾帧，` +
+              `保证机位/背景/光位完全一致后重试。`
+          );
+        }
+      } catch (e) {
+        if (String(e.message).includes("首尾帧差异过大")) throw e;
+        log(`[${sid}] 首尾帧配对检查跳过：${e.message}`);
+      }
+    }
 
     const feedback = [];
     const history = [];
@@ -693,19 +851,41 @@ function writeH3Md(dest, spec, manifest) {
     lines.push(`- 景别：${shot.shot_size || "-"}`);
     lines.push(`- 本镜要表达：${shot.intent || "-"}`);
     if (shot.connect) lines.push(`- 与上一镜衔接：${shot.connect}`);
+    if (shot.last_frame) {
+      lines.push(`- **首尾帧模式**：<Picture 1> = 0.00 秒，<Picture N> = ${(shot.duration || 5).toFixed(2)} 秒`);
+      if (shot.what_moves) lines.push(`- 变化内容：${shot.what_moves}`);
+      if (shot.keep_static) lines.push(`- 保持不变：${shot.keep_static}`);
+    }
     lines.push("");
 
     // 上传清单
     const wants = Array.isArray(shot.ref) ? shot.ref : shot.ref ? [shot.ref] : [];
-    if (wants.length) {
+    const allPics = shot.last_frame ? [...wants, shot.last_frame] : wants;
+    if (allPics.length) {
       lines.push("**上传清单（按顺序）**");
       lines.push("");
       lines.push("| 序号 | 文件 | 用途 |");
       lines.push("|---|---|---|");
-      wants.forEach((w, i) => {
-        const use = (shot.picture_use && shot.picture_use[i]) || "见正文声明";
+      allPics.forEach((w, i) => {
+        let use;
+        if (shot.last_frame && i === allPics.length - 1) {
+          use = `**尾帧**：对齐 ${(shot.duration || 5).toFixed(2)} 秒`;
+        } else if (i === 0 && shot.last_frame) {
+          use = "**首帧**：对齐 0.00 秒（构图/机位/光位）";
+        } else {
+          use = (shot.picture_use && shot.picture_use[i]) || "见正文声明";
+        }
         lines.push(`| <Picture ${i + 1}> | \`${path.basename(w)}\` | ${use} |`);
       });
+      lines.push("");
+    }
+
+    if (shot.last_frame) {
+      lines.push("**首尾帧对齐句（放在提示词最前面）**");
+      lines.push("");
+      lines.push("```text");
+      lines.push(buildFrameAlign(shot));
+      lines.push("```");
       lines.push("");
     }
 

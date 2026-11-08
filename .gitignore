@@ -8,7 +8,7 @@ apikey.txt
 
 # ===== 依赖 =====
 node_modules/
-package-lock.json
+# package-lock.json 必须提交：锁定依赖版本，保证换机器能复现同样的出图结果
 
 # ===== 生成产物（体积大、可重跑）=====
 out/
@@ -27,3 +27,7 @@ __pycache__/
 *.log
 *.tmp
 .cache/
+# 试验产物、对比图、临时截图，都不进版本库
+projects/*/10-refs/_scratch/
+projects/*/10-refs/_*.png
+tools/storyboard/_*.js

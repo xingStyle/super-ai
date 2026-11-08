@@ -7,9 +7,29 @@
 ```
 .cursor/rules/ai-video-production.mdc   通用生产规则（与题材无关，先读这个）
 tools/storyboard/                       流水线脚本
-projects/<项目名>/                       一个项目一棵树
-战场/                                    原始素材（参考图、材质）
+projects/<项目名>/                      一个项目一棵树，所有资料都在这里
 ```
+
+## 新材料放哪里
+
+**所有素材都进项目目录，不要放仓库根目录。** 一个项目的所有资料必须能随这个目录整体搬走。
+
+| 材料 | 放这里 | 命名 |
+|---|---|---|
+| 角色定妆照（四视图） | `projects/<项目>/10-refs/` | `char-<角色>.png` |
+| 角色头部特写（长相锁定） | `projects/<项目>/10-refs/` | `char-<角色>-head.png` |
+| 场景全景图（每场一张，空间基准） | `projects/<项目>/10-refs/` | `scene-<场景>.png` |
+| 角色视角背景（切正脸要用） | `projects/<项目>/10-refs/` | `bg-<角色>-<朝向>.png` |
+| 原始素材（照片、材质、扫描件） | `projects/<项目>/00-source/` | 保留原文件名 |
+| 剧情、人物、时代设定 | `projects/<项目>/00-spec/` | `story.md` |
+| 分镜定义（唯一数据源） | `projects/<项目>/00-spec/` | `shots.json` |
+
+**命名是最重要的一环**：`shots.json` 里写 `ref: ["char-general.png"]` 时只写文件名，
+脚本按 `10-refs/` → `20-frames/` 顺序去找。名字对不上会直接报错终止——这是故意的，
+以前静默跳过导致过整批参考图失效却没人发现。
+
+原始素材不要直接当参考图用：先用 `character_sheet.js` 生成四视图定妆照，
+再拿定妆照当参考图。直接拿照片喂给模型，长相会每镜漂移。
 
 ## 规则文档
 
@@ -72,10 +92,11 @@ projects/song/
 
 | 提交 | 不提交 |
 |---|---|
-| `.cursor/rules/`、`tools/`（脚本与 package.json） | `node_modules/` |
-| `projects/*/00-spec/`（剧情、分镜） | `out/`（旧生成产物） |
+| `.cursor/rules/`、`tools/`（脚本与 package.json、package-lock.json） | `node_modules/` |
+| `projects/*/00-spec/`（剧情、分镜） | `out/`（旧版生成产物，241 MB） |
 | `projects/*/10-refs/`（定妆照、背景图） | `projects/*/20-frames`、`30-video`、`40-out` |
-| `战场/`（原始素材） | 日志 `*.log`、密钥文件 |
+| `projects/*/00-source/`（原始素材） | 日志 `*.log`、密钥文件 |
+| `README.md`、`.gitignore` | `10-refs/_scratch/`（调试对比图） |
 
 **密钥绝不提交。** `.gitignore` 已覆盖 `apikey.txt`、`*.text`、`*.key`、`.env*`。
 
